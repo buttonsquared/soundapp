@@ -11,70 +11,74 @@ import UIKit
 import AVFoundation
 import CoreMedia
 
-let CMYKHalftone = "CMYK Halftone"
-let CMYKHalftoneFilter = CIFilter(name: "CICMYKHalftone", withInputParameters: ["inputWidth" : 20, "inputSharpness": 1])
 
-let ComicEffect = "Comic Effect"
-let ComicEffectFilter = CIFilter(name: "CIComicEffect")
-
-let Crystallize = "Crystallize"
-let CrystallizeFilter = CIFilter(name: "CICrystallize", withInputParameters: ["inputRadius" : 30])
-
-let Edges = "Edges"
-let EdgesEffectFilter = CIFilter(name: "CIEdges", withInputParameters: ["inputIntensity" : 10])
-
-let HexagonalPixellate = "Hex Pixellate"
-let HexagonalPixellateFilter = CIFilter(name: "CIHexagonalPixellate", withInputParameters: ["inputScale" : 40])
-
-let Invert = "Invert"
-let InvertFilter = CIFilter(name: "CIColorInvert")
-
-let Pointillize = "Pointillize"
-let PointillizeFilter = CIFilter(name: "CIPointillize", withInputParameters: ["inputRadius" : 30])
-
-let LineOverlay = "Line Overlay"
-let LineOverlayFilter = CIFilter(name: "CILineOverlay")
-
-let Posterize = "Posterize"
-let PosterizeFilter = CIFilter(name: "CIColorPosterize", withInputParameters: ["inputLevels" : 5])
-
-let Filters = [
-    CMYKHalftone: CMYKHalftoneFilter,
-    ComicEffect: ComicEffectFilter,
-    Crystallize: CrystallizeFilter,
-    Edges: EdgesEffectFilter,
-    HexagonalPixellate: HexagonalPixellateFilter,
-    Invert: InvertFilter,
-    Pointillize: PointillizeFilter,
-    LineOverlay: LineOverlayFilter,
-    Posterize: PosterizeFilter
-]
-
-let FilterNames = [String](Filters.keys).sort()
-
-class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDelegate
+class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDelegate,UIPickerViewDataSource, UIPickerViewDelegate
 {
     let mainGroup = UIStackView()
     let imageView = UIImageView(frame: CGRectZero)
-    let filtersControl = UISegmentedControl(items: FilterNames)
+    let frameRateSelection = ["24","30","60","90"]
+    var previousBrightness = CGFloat(0.0)
+    var previousDecible = Float();
+    var currentDecible = Float();
+    var fpsRate = Float()
+    var roomLevel = Float();
+    var whiteLight = NSDate()
+    var pop = NSDate()
+    var whiteLightFound = false
+    var popHeard = false
+    var start = false;
+    var fps = Double();
+    var count = 0;
+    var previousSecond = 0;
+    var starting = NSDate();
+    var current = 1;
+    var countCurrent = 0;
+    var isCalibrating = false;
+    var offset = Float(25);
 
+    @IBOutlet weak var calibrateButton: UIButton!
+    @IBOutlet weak var calibrate: UITextField!
+    @IBOutlet weak var fpsRunningRate: UILabel!
+    @IBOutlet weak var fpsPicket: UIPickerView!
+    @IBOutlet weak var decibleLevel: UILabel!
+    @IBOutlet weak var second: UILabel!
+    @IBOutlet weak var frameRateLabel: UILabel!
     var recorder: AVAudioRecorder!
     var levelTimer = NSTimer()
     var lowPassResults: Double = 0.0
+    var text = ""
+    let file = "settings.txt"
+    
+    
+    @IBAction func doCalibrate(sender: AnyObject) {
+        calibrate.hidden = !calibrate.hidden;
+        isCalibrating = !isCalibrating;
+    }
+    
+    @IBAction func startSync(sender: UIButton) {
+        second.text = " "
+        frameRateLabel.text = " "
+        whiteLightFound = false
+        popHeard = false
+        start = true;
+        
+    }
+    
+    @IBAction func stopSync(sender: UIButton) {
+        whiteLightFound = false
+        popHeard = false;
+        start = false;
+    }
     
     override func viewDidLoad()
     {
         super.viewDidLoad()
-        
-        /*
-        Sound Stuff
-        */
-        //make an AudioSession, set it to PlayAndRecord and make it active
+
+        loadSettings();
         let audioSession:AVAudioSession = AVAudioSession.sharedInstance()
         try! audioSession.setCategory(AVAudioSessionCategoryPlayAndRecord)
         try! audioSession.setActive(true)
-        
-        //set up the URL for the audio file
+
         let documents: AnyObject = NSSearchPathForDirectoriesInDomains( NSSearchPathDirectory.DocumentDirectory,  NSSearchPathDomainMask.UserDomainMask, true)[0]
         let str =  documents.stringByAppendingPathComponent("recordTest.caf")
         let url = NSURL.fileURLWithPath(str as String)
@@ -97,23 +101,11 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         //start recording
         recorder.record()
         
-        print(recorder.averagePowerForChannel(0))
-        
         //instantiate a timer to be called with whatever frequency we want to grab metering values
         self.levelTimer = NSTimer.scheduledTimerWithTimeInterval(0.02, target: self, selector: Selector("levelTimerCallback"), userInfo: nil, repeats: true)
         
-        
-        
-        view.addSubview(mainGroup)
-        mainGroup.axis = UILayoutConstraintAxis.Vertical
-        mainGroup.distribution = UIStackViewDistribution.Fill
-        
-        mainGroup.addArrangedSubview(imageView)
-        mainGroup.addArrangedSubview(filtersControl)
-        
-        imageView.contentMode = UIViewContentMode.ScaleAspectFit
-        
-        filtersControl.selectedSegmentIndex = 0
+
+
         
         let captureSession = AVCaptureSession()
         captureSession.sessionPreset = AVCaptureSessionPresetPhoto
@@ -122,7 +114,33 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         
         do
         {
+            
             let input = try AVCaptureDeviceInput(device: backCamera)
+           
+            var finalFormat = AVCaptureDeviceFormat()
+            var maxFps: Double = 0
+            for vFormat in backCamera!.formats {
+                var ranges      = vFormat.videoSupportedFrameRateRanges as!  [AVFrameRateRange]
+                let frameRates  = ranges[0]
+                
+                
+                if frameRates.maxFrameRate >= maxFps {
+                    maxFps = frameRates.maxFrameRate
+                    finalFormat = vFormat as! AVCaptureDeviceFormat
+                }
+            }
+            print(maxFps);
+            if maxFps != 0 {
+                let timeValue = Int64(1200.0 / maxFps)
+                let timeScale: Int32 = 1200
+                try backCamera!.lockForConfiguration()
+                backCamera!.activeFormat = finalFormat
+                backCamera!.activeVideoMinFrameDuration = CMTimeMake(1, Int32(maxFps))
+                backCamera!.activeVideoMaxFrameDuration = CMTimeMake(1, Int32(maxFps))
+                backCamera!.focusMode = AVCaptureFocusMode.AutoFocus
+                backCamera!.unlockForConfiguration()
+            }
+            
             
             captureSession.addInput(input)
         }
@@ -156,15 +174,20 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
     
     func captureOutput(captureOutput: AVCaptureOutput!, didOutputSampleBuffer sampleBuffer: CMSampleBuffer!, fromConnection connection: AVCaptureConnection!)
     {
-        guard let filter = Filters[FilterNames[filtersControl.selectedSegmentIndex]] else
-        {
-            return
+        count = count + 1;
+        if (abs(Int(starting.timeIntervalSinceNow)) != current) {
+            self.countCurrent = self.count;
+            dispatch_async(dispatch_get_main_queue()) {
+                self.fpsRunningRate.text = String(self.countCurrent)
+            }
+            current = abs(Int(starting.timeIntervalSinceNow));
+            count = 0;
         }
-        //print("Capture output running")
+
+
         let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer)
         let cameraImage = CIImage(CVPixelBuffer: pixelBuffer!)
         
-        //let imageForDisplay = UIImage(CIImage: cameraImage);
         CVPixelBufferLockBaseAddress(pixelBuffer!,0);
     
         let baseAddress = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer!, 0);
@@ -181,73 +204,178 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         let dataType = UnsafePointer<UInt8>(data)
         
         var totalBrightness = CGFloat(0.0)
-        for index in 1...height {
-            for index1 in 1...width / 4 {
-                let offset = 4*((Int(width) * Int(index1)) + Int(index))
-                let alphaValue = dataType[offset]
-                let redColor = dataType[offset+1]
-                let greenColor = dataType[offset+2]
-                let blueColor = dataType[offset+3]
+
+        totalBrightness = 0;
+        //for index in 1...height {
+            //for index1 in 1...width / 4 {
+        var index1 = (width / 4) / 2
+        var index = height / 2;
+        let offset = 4*((Int(width) * Int(index1)) + Int(index))
+        let alphaValue = dataType[offset]
+        let redColor = dataType[offset+1]
+        let greenColor = dataType[offset+2]
+        let blueColor = dataType[offset+3]
                 
-                let redFloat = CGFloat(redColor)/255.0
-                let greenFloat = CGFloat(greenColor)/255.0
-                let blueFloat = CGFloat(blueColor)/255.0
-                let alphaFloat = CGFloat(1)/255.0
-                let brightness = redFloat * 0.3 + greenFloat * 0.59 + blueFloat * 0.11;
-                totalBrightness = totalBrightness + brightness
-                print("brightness=\(brightness)")
+        let redFloat = CGFloat(redColor)/255.0
+        let greenFloat = CGFloat(greenColor)/255.0
+        let blueFloat = CGFloat(blueColor)/255.0
+        let alphaFloat = CGFloat(1)/255.0
+        let brightness = redFloat * 0.3 + greenFloat * 0.59 + blueFloat * 0.11;
+        totalBrightness = totalBrightness + brightness
+ 
+            //}
+        //}
+        
+        var percentageChange = ((totalBrightness - previousBrightness) / previousBrightness) * 100
+        if (percentageChange > 40 && start && !whiteLightFound) {
+            print("brightness=\(totalBrightness) \(previousBrightness) \(percentageChange)")
+            whiteLight = NSDate();
+            whiteLightFound = true;
+            if (popHeard) {
+                dispatch_async(dispatch_get_main_queue()) {
+                    self.fpsRate = Float(self.frameRateSelection[self.fpsPicket.selectedRowInComponent(0)])!
+                    let timeElapsed = abs(Float(self.pop.timeIntervalSinceDate(self.whiteLight)))
+                    let seconds = Int(timeElapsed)
+                    var mili = 0;
+                    if (timeElapsed >= 1) {
+                        mili = Int((timeElapsed - Float(seconds)) * 1000)
+                    } else {
+                        mili = Int((timeElapsed) * 1000)
+                    }
+                    print("\(seconds) \(abs(mili))");
+                    var frameRate = Int(Float(seconds) * self.fpsRate);
+                    var displayString = String(frameRate);
+                    if (abs(mili) < 250) {
+                        displayString = displayString + " 1/4";
+                    } else if (abs(mili) >= 250 && abs(mili) < 500) {
+                        displayString = displayString + " 2/4";
+                    } else if (abs(mili) >= 500 && abs(mili) < 750) {
+                        displayString = displayString + " 3/4";
+                    } else {
+                        displayString = String((frameRate + 1))
+                    }
+                    self.frameRateLabel.text = displayString
+                    self.second.text = self.stringFromTimeInterval(self.pop.timeIntervalSinceDate(self.whiteLight)) as String
+                }
             }
         }
-        
-        
-        //print("total=\(totalBrightness / CGFloat(height + width / 4))")
+        previousBrightness = totalBrightness;
 
-        
-        
-  
-   
-//        unsigned char* pixels = [self rgbaPixels];
-//        double totalLuminance = 0.0;
-//        for(int p=0;p<self.size.width*self.size.height*4;p+=4)
-//        {
-//            totalLuminance += pixels[p]*0.299 + pixels[p+1]*0.587 + pixels[p+2]*0.114;
-//        }
-//        totalLuminance /= (self.size.width*self.size.height);
-//        totalLuminance /= 255.0;
-//        return totalLuminance;
-//        
-//        totalLuminance = totalLuminance/Double(countPixels);
-//        
-//        print(totalLuminance);
-
-        filter!.setValue(cameraImage, forKey: kCIInputImageKey)
-        
-        let filteredImage = UIImage(CIImage: filter!.valueForKey(kCIOutputImageKey) as! CIImage!)
-
-        dispatch_async(dispatch_get_main_queue())
-        {
-            self.imageView.image = filteredImage;
-        }
+//
         
     }
     
-    func convertCIImageToCGImage(inputImage: CIImage) -> CGImage! {
-        let context = CIContext(options: nil)
-        return context.createCGImage(inputImage, fromRect: inputImage.extent)
-    }
-    
-    override func viewDidLayoutSubviews()
-    {
-        let topMargin = topLayoutGuide.length
-        
-        mainGroup.frame = CGRect(x: 0, y: topMargin, width: view.frame.width, height: view.frame.height - topMargin).insetBy(dx: 5, dy: 5)
+    func runAfterDelay(delay: NSTimeInterval, block: dispatch_block_t) {
+        let time = dispatch_time(DISPATCH_TIME_NOW, Int64(delay * Double(NSEC_PER_SEC)))
+        dispatch_after(time, dispatch_get_main_queue(), block)
     }
     
     func levelTimerCallback() {
         recorder.updateMeters()
-        //print(recorder.averagePowerForChannel(0))
+        currentDecible = recorder.averagePowerForChannel(0);
+        var percentageChange = ((abs(currentDecible) - abs(previousDecible)) / abs(previousDecible)) * 100
+        if (abs(percentageChange) > 40 && !popHeard && start) {
+            print("audio=\(currentDecible) \(previousDecible) \(percentageChange)")
+            popHeard = true
+            pop = NSDate();
+            if (whiteLightFound) {
+                dispatch_async(dispatch_get_main_queue()) {
+                    self.fpsRate = Float(self.frameRateSelection[self.fpsPicket.selectedRowInComponent(0)])!
+                    let timeElapsed = abs(Float(self.pop.timeIntervalSinceDate(self.whiteLight)))
+                    let seconds = Int(timeElapsed)
+                    var mili = 0;
+                    if (timeElapsed >= 1) {
+                        mili = Int((timeElapsed - Float(seconds)) * 1000)
+                    } else {
+                        mili = Int((timeElapsed) * 1000)
+                    }
+                    print("\(seconds) \(abs(mili))");
+                    var frameRate = Int(Float(seconds) * self.fpsRate);
+                    var displayString = String(frameRate);
+                    if (abs(mili) < 250) {
+                        displayString = displayString + " 1/4";
+                    } else if (abs(mili) >= 250 && abs(mili) < 500) {
+                        displayString = displayString + " 2/4";
+                    } else if (abs(mili) >= 500 && abs(mili) < 750) {
+                        displayString = displayString + " 3/4";
+                    } else {
+                        displayString = String((frameRate + 1))
+                    }
+                    self.frameRateLabel.text = displayString
+                    self.second.text = self.stringFromTimeInterval(self.pop.timeIntervalSinceDate(self.whiteLight)) as String
+                }
+                
+            }
+        }
+        previousDecible = currentDecible;
         
     }
+    
+    func numberOfComponentsInPickerView(pickerView: UIPickerView) -> Int {
+        return 1
+    }
+    
+    func pickerView(pickerView: UIPickerView, numberOfRowsInComponent component: Int) -> Int {
+        return frameRateSelection.count
+    }
+    
+    func pickerView(pickerView: UIPickerView, titleForRow row: Int, forComponent component: Int) -> String! {
+        return frameRateSelection[row]
+    }
+    
+    func stringFromTimeInterval(interval:NSTimeInterval) -> NSString {
+        
+        var ti = NSInteger(interval)
+        
+        var ms = Int((interval % 1) * 1000)
+        
+        var seconds = ti % 60
+        
+        return NSString(format: "%0.2d.%0.3d",abs(seconds),abs(ms))
+    }
+    
+    func saveSettings() {
+        if let dir : NSString = NSSearchPathForDirectoriesInDomains(NSSearchPathDirectory.DocumentDirectory, NSSearchPathDomainMask.AllDomainsMask, true).first {
+            let path = dir.stringByAppendingPathComponent(file);
+            
+            //writing
+            do {
+                try text.writeToFile(path, atomically: false, encoding: NSUTF8StringEncoding)
+            }
+            catch {/* error handling here */}
+            
+            //reading
+            
+        }
+    }
+    
+    func loadSettings() {
+        if let dir : NSString = NSSearchPathForDirectoriesInDomains(NSSearchPathDirectory.DocumentDirectory, NSSearchPathDomainMask.AllDomainsMask, true).first {
+            let path = dir.stringByAppendingPathComponent(file);
+        
+            do {
+                text = try NSString(contentsOfFile: path, encoding: NSUTF8StringEncoding) as String
+            } catch {
+            
+            }
+        }
+    }
+    
+   
+    @IBAction func calculateDecible(sender: UIButton) {
+        dispatch_async(dispatch_get_main_queue()) {
+            if (self.isCalibrating) {
+                var dbLevel = Int(round(20 * log10(5 * powf(10, (self.currentDecible/20)) * 160) + self.offset));
+                self.text = self.calibrate.text!
+                if (Float(self.calibrate.text!) != nil  && dbLevel != self.calibrate) {
+                    self.offset = self.offset + Float(self.text)! - Float(dbLevel)
+                }
+                self.saveSettings();
+            }
+            self.decibleLevel.text = String(Int(round(20 * log10(5 * powf(10, (self.currentDecible/20)) * 160) + self.offset)));
+        }
+    }
+    
     
 }
 
